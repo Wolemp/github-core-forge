@@ -3,6 +3,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { ApiError, dispatch, type Ctx } from './src/rest.ts';
+import { handleGit, isGitPath } from './src/gitHttp.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const TOKEN = process.env.MAKEFUN_SHOP_TOKEN ?? '';
@@ -32,6 +33,17 @@ function bearer(req: IncomingMessage): string | null {
   if (typeof header !== 'string') return null;
   const m = /^(?:Bearer|token)\s+(.+)$/i.exec(header.trim());
   return m === null ? null : m[1].trim();
+}
+
+/** Git clients send the token as a bearer header or as the password (or user name) of basic auth. */
+function gitToken(req: IncomingMessage): string | null {
+  const header = req.headers.authorization;
+  if (typeof header !== 'string') return null;
+  const basic = /^Basic\s+(.+)$/i.exec(header.trim());
+  if (basic === null) return bearer(req);
+  const [user, ...rest] = Buffer.from(basic[1], 'base64').toString('utf8').split(':');
+  const password = rest.join(':');
+  return password !== '' ? password : user;
 }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -107,6 +119,19 @@ export function createApp(): Server {
           if (res.headersSent) return;
           if (err instanceof ApiError) sendError(res, err);
           else sendJson(res, 500, { message: 'Server Error' });
+        });
+        return;
+      }
+      if (isGitPath(path)) {
+        const token = gitToken(req);
+        if (token === null || (TOKEN !== '' && token !== TOKEN)) {
+          res.writeHead(401, { 'www-authenticate': 'Basic realm="git"', 'content-type': 'text/plain', 'content-length': 13 });
+          res.end('Unauthorized\n');
+          req.resume();
+          return;
+        }
+        handleGit(req, res, url).catch(() => {
+          if (!res.headersSent) res.writeHead(500).end();
         });
         return;
       }
