@@ -260,12 +260,17 @@ function uploadV2(repo: Repo, packets: Packet[]): Buffer {
   return Buffer.concat(parts);
 }
 
-/** v0 upload-pack: want/have/deepen lines, then done; answers with ACK/NAK and a side-band pack. */
+/**
+ * v0 upload-pack over stateless HTTP. A request without `done` is a negotiation round: it answers the
+ * shallow list (when deepening) and the acknowledgments for the haves. The request with `done` answers
+ * ACK/NAK and the side-band pack.
+ */
 function uploadV0(repo: Repo, packets: Packet[]): Buffer {
   const wants: string[] = [];
   const haves: string[] = [];
   const clientShallow: string[] = [];
   let depth: number | null = null;
+  let done = false;
   for (const packet of packets) {
     if (packet.kind !== 'data') continue;
     const line = text(packet);
@@ -273,14 +278,24 @@ function uploadV0(repo: Repo, packets: Packet[]): Buffer {
     else if (line.startsWith('have ')) haves.push(line.slice(5, 45));
     else if (line.startsWith('shallow ')) clientShallow.push(line.slice(8).trim());
     else if (line.startsWith('deepen ')) depth = Math.max(1, Number(line.slice(7)) || 1);
+    else if (line === 'done') done = true;
   }
   if (wants.length === 0) return FLUSH;
   const plan = planFetch(repo, wants, haves, clientShallow, depth);
   const parts: Buffer[] = [];
+  // Stateless HTTP resends the shallow list in every response that answers a deepen request.
   if (depth !== null) {
-    for (const sha of plan.newShallow) parts.push(pkt(`shallow ${sha}\n`));
-    for (const sha of plan.unshallow) parts.push(pkt(`unshallow ${sha}\n`));
+    for (const sha of plan.newShallow) parts.push(pkt(`shallow ${sha}` + String.fromCharCode(10)));
+    for (const sha of plan.unshallow) parts.push(pkt(`unshallow ${sha}` + String.fromCharCode(10)));
     parts.push(FLUSH);
+  }
+  if (!done) {
+    if (haves.length > 0) {
+      for (const have of plan.haveKnown) parts.push(pkt(`ACK ${have} common\n`));
+      if (plan.haveKnown.length > 0) parts.push(pkt(`ACK ${plan.haveKnown[plan.haveKnown.length - 1]} ready\n`));
+      parts.push(pkt('NAK\n'));
+    }
+    return Buffer.concat(parts);
   }
   if (plan.haveKnown.length === 0) parts.push(pkt('NAK\n'));
   else parts.push(pkt(`ACK ${plan.haveKnown[plan.haveKnown.length - 1]}\n`));
@@ -413,7 +428,7 @@ export async function handleGit(req: IncomingMessage, res: ServerResponse, url: 
   try {
     if (endpoint === 'git-upload-pack') {
       const v2 = protocol.split(':').includes('version=2');
-      const packets = readPackets(raw, 0, v2 ? 1 : 2).packets;
+      const packets = readPackets(raw, 0, v2 ? 1 : Infinity).packets;
       return send(res, 200, 'application/x-git-upload-pack-result', v2 ? uploadV2(repo, packets) : uploadV0(repo, packets));
     }
     return send(res, 200, 'application/x-git-receive-pack-result', receive(repo, raw));
