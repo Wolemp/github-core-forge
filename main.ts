@@ -21,6 +21,10 @@ import { createApp } from './app.ts';
 // The forge keeps every repository in memory for the life of this one process; name it for ps.
 process.title = 'github-core-forge';
 
+// A bug in one request must not take the forge (and every repository in it) down with it.
+process.on('uncaughtException', (err) => process.stderr.write(`[entry] uncaught: ${err instanceof Error ? err.stack : String(err)}\n`));
+process.on('unhandledRejection', (err) => process.stderr.write(`[entry] unhandled rejection: ${err instanceof Error ? err.stack : String(err)}\n`));
+
 const ENV_URL = (process.env.MAKEFUN_ENV_URL ?? '').replace(/\/+$/, '');
 if (ENV_URL === '') {
   process.stderr.write('[entry] MAKEFUN_ENV_URL is not set: there is no env to register with\n');
