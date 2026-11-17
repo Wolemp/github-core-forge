@@ -4,6 +4,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { ApiError, dispatch, type Ctx } from './src/rest.ts';
 import { handleGit, isGitPath } from './src/gitHttp.ts';
+import { executeGraphQL } from './src/graphql.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const TOKEN = process.env.MAKEFUN_SHOP_TOKEN ?? '';
@@ -97,6 +98,21 @@ async function handleRest(req: IncomingMessage, res: ServerResponse, url: URL): 
   sendJson(res, reply.status, reply.body, reply.headers ?? {});
 }
 
+async function handleGraphql(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const raw = await readBody(req);
+  const token = bearer(req);
+  if (token === null) throw new ApiError(401, 'Requires authentication');
+  if (TOKEN !== '' && token !== TOKEN) throw new ApiError(401, 'Bad credentials');
+  if (req.method !== 'POST') throw new ApiError(404, 'Not Found');
+  let body: unknown;
+  try {
+    body = JSON.parse(raw.toString('utf8'));
+  } catch {
+    throw new ApiError(400, 'Problems parsing JSON');
+  }
+  sendJson(res, 200, executeGraphQL(body));
+}
+
 /** Build the server. It binds nothing until the caller listens; the entry listens on an ephemeral port. */
 export function createApp(): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -116,6 +132,14 @@ export function createApp(): Server {
       }
       if (path === '/api/v3' || path.startsWith('/api/v3/')) {
         handleRest(req, res, url).catch((err: unknown) => {
+          if (res.headersSent) return;
+          if (err instanceof ApiError) sendError(res, err);
+          else sendJson(res, 500, { message: 'Server Error' });
+        });
+        return;
+      }
+      if (path === '/api/graphql') {
+        handleGraphql(req, res).catch((err: unknown) => {
           if (res.headersSent) return;
           if (err instanceof ApiError) sendError(res, err);
           else sendJson(res, 500, { message: 'Server Error' });
