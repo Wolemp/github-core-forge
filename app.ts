@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { ApiError, dispatch, type Ctx } from './src/rest.ts';
 import { handleGit, isGitPath } from './src/gitHttp.ts';
 import { executeGraphQL } from './src/graphql.ts';
+import { handleMcp } from './src/mcp.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const TOKEN = process.env.MAKEFUN_SHOP_TOKEN ?? '';
@@ -113,6 +114,18 @@ async function handleGraphql(req: IncomingMessage, res: ServerResponse): Promise
   sendJson(res, 200, executeGraphQL(body));
 }
 
+async function handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const raw = await readBody(req);
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { message: 'Method Not Allowed' }, { allow: 'POST' });
+    return;
+  }
+  const token = bearer(req);
+  const authorized = token !== null && (TOKEN === '' || token === TOKEN);
+  const result = handleMcp(raw, authorized);
+  sendJson(res, result.status, result.body);
+}
+
 /** Build the server. It binds nothing until the caller listens; the entry listens on an ephemeral port. */
 export function createApp(): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -135,6 +148,12 @@ export function createApp(): Server {
           if (res.headersSent) return;
           if (err instanceof ApiError) sendError(res, err);
           else sendJson(res, 500, { message: 'Server Error' });
+        });
+        return;
+      }
+      if (path === '/mcp') {
+        handleMcpRequest(req, res).catch(() => {
+          if (!res.headersSent) sendJson(res, 500, { message: 'Server Error' });
         });
         return;
       }
